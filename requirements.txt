@@ -1,0 +1,6 @@
+streamlit
+python-docx
+pdfplumber
+anthropic
+openai
+pandas
