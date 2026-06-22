@@ -5,13 +5,24 @@ import os
 import sqlite3
 from contextlib import contextmanager
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quiz.db")
+# 本地开发用项目目录，HF Spaces 云端用 /data 持久化卷
+if os.path.isdir("/data"):
+    DB_PATH = os.path.join("/data", "quiz.db")
+else:
+    DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quiz.db")
+
+
+def _ensure_data_dir():
+    """确保数据库文件所在目录存在（云端 /data 可能首次需创建）。"""
+    d = os.path.dirname(DB_PATH)
+    if d:
+        os.makedirs(d, exist_ok=True)
 
 
 @contextmanager
 def get_connection():
     """获取数据库连接（上下文管理器），自动提交和关闭。"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     _create_tables(conn)

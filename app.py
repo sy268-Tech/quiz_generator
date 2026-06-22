@@ -49,7 +49,13 @@ def reset_to_upload():
 
 # ─── 题型判断 & 评分辅助函数 ─────────────────────────────────────
 def _is_choice(qtype: str, q: dict) -> bool:
-    return "选择" in qtype and "options" in q
+    """单选题：类型含"选择"但不含"多选"，且有 options。"""
+    return "选择" in qtype and "多选" not in qtype and "options" in q
+
+
+def _is_multi_choice(qtype: str, q: dict) -> bool:
+    """多选题：类型含"多选"，且有 options。"""
+    return "多选" in qtype and "options" in q
 
 
 def _is_truefalse(qtype: str) -> bool:
@@ -102,6 +108,16 @@ def _grade_exact(user_ans, expected) -> bool:
     return user == exp.upper()
 
 
+def _grade_multi_choice(user_ans, expected) -> bool:
+    """多选题评分：用户选中的字母集合必须与答案完全一致。"""
+    if isinstance(user_ans, list):
+        user_str = "".join(sorted(str(x).strip().upper() for x in user_ans))
+    else:
+        user_str = "".join(sorted(str(user_ans).strip().upper()))
+    exp_str = "".join(sorted(str(expected).strip().upper()))
+    return user_str == exp_str
+
+
 def _grade_fuzzy(user_ans: str, expected: str) -> bool:
     """模糊匹配：去空格、大小写不敏感。"""
     user = user_ans.strip().replace(" ", "").replace("　", "").lower()
@@ -146,6 +162,9 @@ def _format_answer_for_display(answer, q: dict | None = None) -> str:
         if q and set(answer.keys()) <= {"A", "B", "C", "D", "E", "F"}:
             return str(answer)
         return ", ".join(f"{k} -> {v}" for k, v in answer.items())
+    # list（多选题答案）
+    if isinstance(answer, list):
+        return ", ".join(str(x) for x in answer)
     return s[:200]
 
 
@@ -422,7 +441,15 @@ with tab1:
                 # 清洗 answer 字段（不同 LLM 格式不统一）
                 for q in st.session_state.questions:
                     qtype = q.get("type", "")
-                    if _is_choice(qtype, q) and "options" in q:
+                    if _is_multi_choice(qtype, q) and "options" in q:
+                        # 多选题：清洗 answer 为纯字母字符串（如 "ABD"）
+                        ans = str(q["answer"]).strip().upper()
+                        opts = q["options"]
+                        # 提取所有有效选项字母
+                        letters = [ch for ch in ans if ch in opts]
+                        if letters:
+                            q["answer"] = "".join(sorted(set(letters)))
+                    elif _is_choice(qtype, q) and "options" in q:
                         ans = str(q["answer"]).strip()
                         opts = q["options"]
                         if ans not in opts:
@@ -485,7 +512,21 @@ with tab1:
 
                 st.markdown(f"**{qid}. [{diff_icon} {diff}] [{qtype}]** {q['question']}")
 
-                if _is_choice(qtype, q):
+                if _is_multi_choice(qtype, q):
+                    options = q.get("options", {})
+                    option_keys = list(options.keys())
+                    key = f"multi_{qid}"
+                    st.multiselect(
+                        f"q_{qid}",
+                        option_keys,
+                        format_func=lambda k, opts=options: f"{k}. {opts.get(k, '')}",
+                        key=key,
+                        label_visibility="collapsed",
+                        placeholder="选择所有正确答案",
+                    )
+                    widget_map[str(qid)] = ("multi_choice", key)
+
+                elif _is_choice(qtype, q):
                     options = q.get("options", {})
                     option_keys = list(options.keys())
                     key = f"radio_{qid}"
@@ -593,6 +634,9 @@ with tab1:
                             if val:
                                 match_result[k] = val
                         user_answers[qid_str] = json.dumps(match_result) if match_result else ""
+                    elif wtype == "multi_choice":
+                        val = st.session_state.get(wkey, [])
+                        user_answers[qid_str] = val if val else []
                     else:
                         val = st.session_state.get(wkey)
                         user_answers[qid_str] = val if val is not None else ""
@@ -611,12 +655,15 @@ with tab1:
                     expected = q.get("answer")
 
                     # 判断是否未作答
-                    unanswered = user_ans is None or user_ans == "" or user_ans == "{}"
+                    unanswered = user_ans is None or user_ans == "" or user_ans == "{}" or user_ans == []
                     if unanswered:
                         grading[qid] = {"correct": None, "user": user_ans, "expected": expected, "verdict": "未作答"}
                         continue
 
-                    if _is_choice(qtype, q) or _is_truefalse(qtype):
+                    if _is_multi_choice(qtype, q):
+                        correct = _grade_multi_choice(user_ans, expected)
+                        total_scored += 1
+                    elif _is_choice(qtype, q) or _is_truefalse(qtype):
                         correct = _grade_exact(user_ans, expected)
                         total_scored += 1
                     elif _is_fillin(qtype):
@@ -699,8 +746,32 @@ with tab1:
             with container:
                 st.markdown(f"**{q['id']}. {status_label} [{qtype}]** {q.get('question', '')}")
 
-                # ── 选择题：展示完整选项 ──
-                if _is_choice(qtype, q):
+                # ── 多选题：展示完整选项 ──
+                if _is_multi_choice(qtype, q):
+                    options = q.get("options", {})
+                    exp_str = str(g["expected"]).strip().upper()
+                    exp_letters = set(ch for ch in exp_str if ch in options)
+
+                    user_list = g["user"] if isinstance(g["user"], list) else []
+                    user_letters = set(str(x).strip().upper() for x in user_list)
+
+                    for opt_key, opt_val in options.items():
+                        is_correct_opt = opt_key in exp_letters
+                        is_user_pick = opt_key in user_letters
+
+                        if is_correct_opt and is_user_pick and verdict:
+                            st.markdown(f":green[{opt_key}. {opt_val}]  << 正确（你选了）")
+                        elif is_correct_opt and is_user_pick and not verdict:
+                            st.markdown(f":green[{opt_key}. {opt_val}]  << 正确（你选了）")
+                        elif is_correct_opt:
+                            st.markdown(f":blue[{opt_key}. {opt_val}]  << 正确答案（你漏选了）")
+                        elif is_user_pick and not verdict:
+                            st.markdown(f":red[{opt_key}. {opt_val}]  << 你错选了此项")
+                        else:
+                            st.markdown(f"{opt_key}. {opt_val}")
+
+                # ── 单选题：展示完整选项 ──
+                elif _is_choice(qtype, q):
                     options = q.get("options", {})
                     expected_letter = g["expected"]
                     exp_letter = ""

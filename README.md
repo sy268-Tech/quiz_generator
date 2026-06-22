@@ -1,3 +1,14 @@
+---
+title: 智能出题系统
+emoji: 🎯
+colorFrom: blue
+colorTo: green
+sdk: streamlit
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # 智能出题系统
 
 上传 Word/PDF 文档，AI 自动分析内容生成题目，在线作答并自动判分。支持错题收集与重做。
